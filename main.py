@@ -1,5 +1,3 @@
-# main.py
-
 from tqdm.auto import tqdm
 import numpy as np
 import os
@@ -26,7 +24,7 @@ MAX_OUTPUT_LEN = 200  # достаточно, чтобы уместить UTR5 +
 # 2) Устройство
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# 3) Читаем данные
+# 3) Чтение данных
 df = pd.read_csv(DATA_PATH)
 
 class UtrDataset(Dataset):
@@ -57,7 +55,7 @@ class UtrDataset(Dataset):
             return_tensors="pt",
         )
 
-        # Цель — "ATG... [SEP] ...TGA"
+        # Нужно "ATG... [SEP] ...TGA"
         sep = self.tokenizer.sep_token
         target_text = utr5 + " " + sep + " " + utr3
         labels = self.tokenizer(
@@ -68,7 +66,7 @@ class UtrDataset(Dataset):
             return_tensors="pt",
         )["input_ids"]
 
-        # Маска для лосса: паддинги = -100
+
         labels[labels == self.tokenizer.pad_token_id] = -100
 
         return {
@@ -108,7 +106,7 @@ if n >= 2:
     val_size   = n - train_size
     train_ds, val_ds = random_split(dataset, [train_size, val_size])
 else:
-    # если записей меньше 2 используем весь датасет, валидации не будет
+    # иначе используем весь датасет, валидации не будет
     train_ds = dataset
     val_ds   = []
 
@@ -130,7 +128,7 @@ scheduler = get_linear_schedule_with_warmup(
 
 # 7) Тренировочный цикл
 for epoch in range(1, EPOCHS + 1):
-    # ==== TRAIN ====
+    # TRAIN
     model.train()
     total_train_loss = 0
     train_iter = tqdm(train_loader, desc=f"Epoch {epoch} [TRAIN]", leave=False)
@@ -157,7 +155,7 @@ for epoch in range(1, EPOCHS + 1):
     avg_train_loss = total_train_loss / len(train_loader)
     print(f"Epoch {epoch} ▶ Train loss: {avg_train_loss:.4f}")
 
-    # ==== VALIDATION ====
+    # VALIDATION
     if val_loader:
         model.eval()
         total_val_loss = 0
@@ -266,7 +264,7 @@ def infer_row(row):
     print("UTR3  :", utr3_pred)
     print()
 
-# Случай: у нас полноценный val_loader
+# Когда полноценный val_loader
 if isinstance(val_loader, DataLoader):
     # возьмём первый индекс из val_ds
     # val_ds — это Subset, у него есть атрибут .indices
@@ -274,7 +272,7 @@ if isinstance(val_loader, DataLoader):
     row = df.iloc[idx]
     infer_row(row)
 
-# Случай: у нас нет валидации (val_loader == None)
+# Когда нет валидации (val_loader == None)
 elif len(df) >= 1:
     # просто инференсим по первой строке датасета
     row = df.iloc[0]
