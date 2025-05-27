@@ -1,4 +1,4 @@
-# EX-UTR: Generative Architecture for Designing 5' and 3' UTRs Based on Protein Expression Profiles
+# EX-UTR: Generative architecture that computes 5' 3' UTRs from input protein expression data in target tissues
 
 EX-UTR is a generative model designed to compute 5' and 3' Untranslated Regions (UTRs) from input protein expression data in target tissues. The model aims to facilitate the design of UTR sequences that can modulate gene expression levels, aiding in synthetic biology and therapeutic applications.
 
