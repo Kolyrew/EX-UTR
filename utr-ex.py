@@ -17,14 +17,18 @@ from transformers import get_linear_schedule_with_warmup
 
 
 # ───────────────── ПАРАМЕТРЫ ─────────────────
-DATA_PATH     = r"C:\Users\lutch\PycharmProjects\EX-UTR\Data\expression_utr_summary.csv"
+DATA_PATH     = r"C:\Users\lutch\PycharmProjects\EX-UTR\Data\expression_utr_summary_9000.csv"
 MODEL_NAME    = "multimolecule/utrbert-5mer"  # или utrbert-3mer
 BATCH_SIZE    = 8
-EPOCHS        = 8
+EPOCHS        = 12
 LR            = 2e-5
 MAX_SEQ_LEN   = 400   # для UTR5+SEP+UTR3, можно «400» или «512»
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+TISSUES = ["Brain","Spinal cord","Heart","Thyroid gland",
+           "Lung","Liver","Pancreas","Small intestine","Colon","Kidney"]
+tissue2id = {t:i for i,t in enumerate(TISSUES)}
 
 # ───────────────── Dataset ─────────────────
 class ExpressionDataset(Dataset):
@@ -65,42 +69,38 @@ class ExpressionDataset(Dataset):
         # enc["input_ids"], enc["attention_mask"] имеют shape=(1, max_seq_len)
         input_ids      = enc["input_ids"].squeeze(0)
         attention_mask = enc["attention_mask"].squeeze(0)
+        tissue = row["tissue"]
+        tid = tissue2id[tissue]
 
         return {
             "input_ids":      input_ids,
             "attention_mask": attention_mask,
+            "tissue_id": torch.tensor(tid, dtype=torch.long),
             "expression":     torch.tensor(expr, dtype=torch.float),
         }
 
 # ───────────────── Модель ─────────────────
 class UtrExpressionModel(nn.Module):
-    def __init__(self, model_name: str):
+    def __init__(self, model_name: str, num_tissues: int, tissue_emb_dim: int = 16):
         super().__init__()
         # 1) Загружаем UTR-BERT ядро
         self.bert = UtrBertModel.from_pretrained(model_name)
         hidden_size = self.bert.config.hidden_size   # обычно 768
 
-        # 2) Резидентный «регрессор» (добавляем небольшой дропаут + линейный слой)
+        # embedding для ткани
+        self.tissue_emb = nn.Embedding(num_tissues, tissue_emb_dim)
+
+        # регрессор на hidden_size + tissue_emb_dim
         self.dropout = nn.Dropout(p=0.1)
-        self.regressor = nn.Linear(hidden_size, 1)   # выдаёт скаляр
+        self.regressor = nn.Linear(hidden_size + tissue_emb_dim, 1)   # выдаёт скаляр
 
-    def forward(self, input_ids, attention_mask):
-        """
-        input_ids: (batch_size, seq_len)
-        attention_mask: (batch_size, seq_len)
-        """
-        # 1) Пробрасываем через UTR-BERT
-        outputs = self.bert(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-        )
-        # outputs.pooler_output имеет shape=(batch_size, hidden_size)
-        pooled = outputs.pooler_output  # [CLS]-embedding
-
-        # 2) Regress
-        x = self.dropout(pooled)
-        x = self.regressor(x).squeeze(-1)  # shape=(batch_size,)
-        return x
+    def forward(self, input_ids, attention_mask, tissue_id):
+        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
+        pooled = outputs.pooler_output                       # (bs, hidden_size)
+        te = self.tissue_emb(tissue_id)                     # (bs, tissue_emb_dim)
+        x = torch.cat([pooled, te], dim=-1)                 # (bs, hidden+tissue_emb)
+        x = self.dropout(x)
+        return self.regressor(x).squeeze(-1)
 
 # ───────────────── Тренировочная функция ─────────────────
 def train():
@@ -121,7 +121,7 @@ def train():
     val_loader   = DataLoader(val_ds,   batch_size=BATCH_SIZE, shuffle=False, num_workers=2)
 
     # 4) Инициализируем модель, оптимизатор, scheduler
-    model = UtrExpressionModel(MODEL_NAME).to(device)
+    model = UtrExpressionModel(MODEL_NAME, num_tissues=len(TISSUES), tissue_emb_dim=16).to(device)
     optimizer = AdamW(model.parameters(), lr=LR)
     total_steps = len(train_loader) * EPOCHS
     scheduler = get_linear_schedule_with_warmup(
@@ -141,13 +141,16 @@ def train():
         model.train()
         total_train_loss = 0.0
 
-        for batch in tqdm(train_loader, desc=f"Epoch {epoch} [TRAIN]"):
-            input_ids      = batch["input_ids"].to(device)
+        for batch in tqdm(train_loader):
+            input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
-            target         = batch["expression"].to(device)  # shape=(bs,)
+            tissue_id = batch["tissue_id"].to(device)  # <- tissue ids
+            target = batch["expression"].to(device)
 
             optimizer.zero_grad()
-            preds = model(input_ids=input_ids, attention_mask=attention_mask)  # (bs,)
+            preds = model(input_ids=input_ids,
+                          attention_mask=attention_mask,
+                          tissue_id=tissue_id)  # <- передаём tissue_id
             loss = criterion(preds, target)
             loss.backward()
             optimizer.step()
@@ -161,23 +164,25 @@ def train():
         # 7) Валидация
         model.eval()
         total_val_loss = 0.0
-        preds_all = []
-        trues_all = []
+        preds_all, trues_all = [], []
         with torch.no_grad():
             for batch in tqdm(val_loader, desc=f"Epoch {epoch} [VAL]"):
-                input_ids      = batch["input_ids"].to(device)
+                input_ids = batch["input_ids"].to(device)
                 attention_mask = batch["attention_mask"].to(device)
-                target         = batch["expression"].to(device)
+                tissue_id = batch["tissue_id"].to(device)
+                target = batch["expression"].to(device)
 
-                preds = model(input_ids=input_ids, attention_mask=attention_mask)
+                # теперь всё будет согласовано
+                preds = model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    tissue_id=tissue_id,
+                )
                 loss = criterion(preds, target)
                 total_val_loss += loss.item()
 
-                preds_all.append(preds.detach().cpu().numpy())
-                trues_all.append(target.detach().cpu().numpy())
-
-        avg_val_loss = total_val_loss / len(val_loader)
-        print(f"Epoch {epoch} ▶ Val MSE loss: {avg_val_loss:.4f}")
+                preds_all.append(preds.cpu().numpy())
+                trues_all.append(target.cpu().numpy())
 
         # 8) Можно посчитать R²-метрику
         preds_all = np.concatenate(preds_all)
