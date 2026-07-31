@@ -1,0 +1,12 @@
+.git
+.gitignore
+.idea
+.vscode
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+notebooks/.ipynb_checkpoints
+results/checkpoints
+*.pth
+*.pt
